@@ -121,6 +121,42 @@ def _get_shear_latex(governing_method: str):
         (r"$V_p=\frac{A_v \cdot f_y}{\sqrt{3}\,\gamma_{m0}}$", 170, True),
     )
 
+def _get_long_shear_latex(check_name: str):
+    """Return LaTeX equations for the longitudinal shear card based on governing check."""
+    n = check_name.lower()
+    if "sl1" in n or "uls" in n:
+        return (
+            (r"$V_L = \frac{V \cdot A_{ec} \cdot \bar{Y}}{I_c}$", 185, True),
+            (r"$SL_1 = \frac{\Sigma Q_u}{V_L};\quad s_{prov} \leq SL_1$", 220, True),
+        )
+    if "sl2" in n or "full" in n:
+        return (
+            (r"$H = \min(H_1,\;H_2)$", 150, False),
+            (r"$H_1 = A_{sl}\,f_y/\gamma_m;\quad H_2 = 0.36\,f_{ck}\,A_{ec}$", 300, False),
+            (r"$SL_2 = \frac{\Sigma Q_u \cdot L}{H};\quad s_{prov} \leq SL_2$", 230, True),
+        )
+    if "max" in n:
+        return (
+            (r"$s \leq \min(600,\;3t_{slab},\;4h_{stud})\;\mathrm{mm}$", 300, False),
+            (r"$\mathrm{(IRC\;22:2015\;Cl.\,606.9)}$", 200, False),
+        )
+    if "min" in n or "feasib" in n:
+        return (
+            (r"$s \geq 75\;\mathrm{mm}$", 100, False),
+            (r"$\mathrm{(IRC\;22:2015\;Cl.\,606.9)}$", 200, False),
+        )
+    if "detail" in n:
+        return (
+            (r"$d \leq 2t_f;\quad h \geq \max(4d,\;100\;\mathrm{mm})$", 240, False),
+            (r"$\mathrm{edge} \geq 25\;\mathrm{mm};\;\mathrm{cover} \geq 25\;\mathrm{mm}$", 260, False),
+        )
+    # Fatigue (SR) — Cl.606.4.2 and any unrecognised
+    return (
+        (r"$V_r = \frac{V_R \cdot A_{ec} \cdot \bar{Y}}{I_c}$", 185, True),
+        (r"$SR = \frac{Q_r}{V_r};\quad s_{prov} \leq SR$", 185, True),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Flexure card — Mp equation varies with the position of the Plastic Neutral
 # Axis (PNA). Transcribed verbatim from IRC:22-2015 Annexure I, Table I.1
@@ -684,6 +720,21 @@ class SteelDesignCheckTab(QWidget):
                         entry["is_high_shear"] = bool(m) and float(m.group(1)) > 0
                 if key == KEY_CHECK_DEFLECTION:
                     entry["check_id"] = worst.check_id
+                if key == KEY_CHECK_SHEAR_LONG_TRANS:
+                    entry["governing_check_name"] = worst.name
+                    entry["governing_check_unit"] = worst.demand_unit
+                    _det = getattr(capacity, "details", {}) or {}
+                    _ss2 = _det.get("stud_spacing_full_shear") or {}
+                    _ssf = _det.get("stud_spacing_fatigue") or {}
+                    entry["sc_vals"] = {
+                        "VL":  getattr(capacity, "VL_N_per_mm", None),
+                        "Qu":  getattr(capacity, "Qu_kN", None),
+                        "H1":  _ss2.get("H1_kN"),
+                        "H2":  _ss2.get("H2_kN"),
+                        "H":   _ss2.get("H_governing_kN"),
+                        "Vr":  _ssf.get("Vr_per_mm_kN"),
+                        "Qr":  getattr(capacity, "Qr_kN", None),
+                    }
                 results_by_key[key] = entry
             except Exception:
                 logger.exception("Failed to load checks %s for key %s", ids, key)
@@ -751,13 +802,13 @@ class SteelDesignCheckTab(QWidget):
             if old_eq is not None:
                 card = self.check_cards[key]
                 layout = card.layout()
-                
+
                 # Remove old equation widget
                 layout.removeWidget(old_eq)
                 old_eq.hide()
                 old_eq.setParent(None)
                 old_eq.deleteLater()
-                
+
                 # Create new equation widget
                 new_eq = LatexEquationView(
                     _interaction_eq_lines(
@@ -785,6 +836,85 @@ class SteelDesignCheckTab(QWidget):
                 val_text = (
                     f"<i>M<sub>u</sub></i> = {Mu_kNm:.2f} kNm, <i>M<sub>dv</sub></i> = {Mdv_kNm:.2f} kNm<br>"
                     f"<i>M<sub>u</sub></i>/<i>M<sub>dv</sub></i> = {ratio:.2f}"
+                )
+        elif key == KEY_CHECK_SHEAR_LONG_TRANS:
+            check_name = res.get("governing_check_name", "")
+            check_unit = res.get("governing_check_unit", "mm")
+            n = check_name.lower()
+
+            # Swap equation panel
+            old_eq = self.check_eq_views.get(key)
+            if old_eq is not None:
+                card = self.check_cards[key]
+                layout = card.layout()
+                layout.removeWidget(old_eq)
+                old_eq.hide()
+                old_eq.setParent(None)
+                old_eq.deleteLater()
+                new_eq = LatexEquationView(_get_long_shear_latex(check_name))
+                layout.insertWidget(1, new_eq)
+                self.check_eq_views[key] = new_eq
+
+            unit_str = f" {check_unit}" if check_unit not in ("", "–") else ""
+
+            _note = (
+                f"<br><small style='color:#666;'>Governing: {check_name}"
+                f" — see report for all design &amp; detailing checks</small>"
+            )
+            sc = res.get("sc_vals", {})
+            def _fv(v, dec=2): return f"{v:.{dec}f}" if v is not None else "—"
+            if "sl1" in n or "uls" in n:
+                _extras = (
+                    f"<i>V<sub>L</sub></i> = {_fv(sc.get('VL'))} N/mm,"
+                    f" <i>Q<sub>u</sub></i> = {_fv(sc.get('Qu'))} kN<br>"
+                )
+            elif "sl2" in n or "full" in n:
+                _extras = (
+                    f"<i>H</i><sub>1</sub> = {_fv(sc.get('H1'))} kN,"
+                    f" <i>H</i><sub>2</sub> = {_fv(sc.get('H2'))} kN,"
+                    f" <i>H</i> = {_fv(sc.get('H'))} kN<br>"
+                )
+            elif "fatigue" in n or "sr" in n:
+                _extras = (
+                    f"<i>V<sub>r</sub></i> = {_fv(sc.get('Vr'))} N/mm,"
+                    f" <i>Q<sub>r</sub></i> = {_fv(sc.get('Qr'))} kN<br>"
+                )
+            else:
+                _extras = ""
+            if "detail" in n:
+                val_text = (
+                    f"Stud Detailing = {'PASS' if passed else 'FAIL'}<br>"
+                    f"<small>d ≤ 2t<sub>f</sub>, h ≥ max(4d, 100 mm), "
+                    f"edge ≥ 25 mm, cover ≥ 25 mm</small>"
+                    + _note
+                )
+            else:
+                if "sl1" in n or "uls" in n:
+                    dem_pfx = "<i>s</i><sub>prov</sub>"
+                    cap_pfx = "SL<sub>1</sub>"
+                elif "sl2" in n or "full" in n:
+                    dem_pfx = "<i>s</i><sub>prov</sub>"
+                    cap_pfx = "SL<sub>2</sub>"
+                elif "fatigue" in n or "sr" in n:
+                    dem_pfx = "<i>s</i><sub>prov</sub>"
+                    cap_pfx = "SR"
+                elif "max" in n:
+                    dem_pfx = "<i>s</i><sub>prov</sub>"
+                    cap_pfx = "<i>s</i><sub>max</sub>"
+                elif "min" in n:
+                    dem_pfx = "<i>s</i><sub>min</sub>"
+                    cap_pfx = "<i>s</i><sub>prov</sub>"
+                elif "feasib" in n:
+                    dem_pfx = "<i>s</i><sub>min</sub>"
+                    cap_pfx = "<i>s</i><sub>eff</sub>"
+                else:
+                    dem_pfx = "Demand"
+                    cap_pfx = "Capacity"
+                val_text = (
+                    _extras
+                    + f"{dem_pfx} = {demand:.0f}{unit_str}<br>"
+                    + f"{cap_pfx} = {capacity:.0f}{unit_str}"
+                    + _note
                 )
         else:
             dem_pfx = DESIGN_CHECK_DEM_PFX.get(key, "Demand")
