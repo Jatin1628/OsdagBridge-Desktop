@@ -1616,7 +1616,8 @@ def resolve_design_results_summary(output_dict: dict) -> dict | None:
     rows = []
     for girder in pg:
         g_data = pg.get(girder) or {}
-        checks = g_data.get("checks") or []
+        # Stiffener sizing rows (ids 20/21) are not design checks; the verdict skips them too.
+        checks = [c for c in g_data.get("checks") or [] if c.get("check_id") not in (20, 21)]
         if not checks:
             rows.append([f"{girder}M1", EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY])
             continue
@@ -1760,21 +1761,11 @@ def _stress_ur(sigma, limit):
 
 
 def resolve_stress_results_steel(output_dict: dict) -> dict | None:
-    # Controlling-girder envelope-SLS steel stress + allowable — single source
-    # of truth computed in the designer; one value for every girder/member row.
-    dr = (output_dict or {}).get("design_results") or {}
-    sigma = dr.get(KEY_SD_STRESS_STEEL)
-    limit = dr.get(KEY_SD_STRESS_STEEL_ALLOWABLE)
-    if sigma is None or limit is None:
+    # Each girder's own stress row — the same row report Table 5.11 and the
+    # logger verdict use (was the controlling girder's value on every row).
+    rows = _uls_check_rows(output_dict, "stress")
+    if rows is None:
         return None
-
-    ur, status = _stress_ur(sigma, limit)
-
-    girders = list(_get_per_girder(output_dict))
-    if not girders:
-        return None
-
-    rows = [[f"{g}M1", _num(sigma), _num(limit), ur, status] for g in girders]
 
     return {
         "id": "stress_steel_service",
